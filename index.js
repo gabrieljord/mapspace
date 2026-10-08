@@ -242,42 +242,10 @@ map.on('singleclick', function (evt) {
       map.removeLayer(vertexLayer);
       vertexLayer = null;
     }
-  } else {
-    // Clicked empty space with nothing selected — start a new trail
-    startTrailAt(evt.coordinate);
   }
 });
 
-function startTrailAt(coord) {
-  selectedFeature = null;
-  globalSelectedIndex = -1;
-  trailFeatures.length = 0;
-  isBranching = false;
-  isCreatingTrail = true;
-  document.body.style.cursor = 'crosshair';
 
-  const newFeature = new Feature(new LineString([coord]));
-  newFeature.setId(`trail-${Date.now()}`);
-  newFeature.setStyle(selectedStyle);
-  vectorSource.addFeature(newFeature);
-  trailFeatures.push(newFeature);
-  selectedFeature = newFeature;
-
-  if (vertexLayer) map.removeLayer(vertexLayer);
-  vertexLayer = new VectorLayer({
-    source: new VectorSource(),
-    style: new Style({
-      image: new CircleStyle({
-        radius: 6,
-        fill: new Fill({ color: 'red' }),
-        stroke: new Stroke({ color: 'white', width: 2 }),
-      }),
-    })
-  });
-  map.addLayer(vertexLayer);
-  updateVertices();
-  setGlobalSelected(0);
-}
 
 // Function to update all vertices
 function updateVertices() {
@@ -376,27 +344,14 @@ map.on('click', function (evt) {
   // Handle first click for a newly created empty trail feature
   const clickedOnVertex = featureAtPixel && featureAtPixel.get('gIndex') !== undefined;
 
-  // If the user clicked directly on a rendered vertex marker, do nothing here.
-  // We don't want clicks on vertex graphics to move existing vertices —
-  // extension should happen by clicking the map empty area after highlighting a vertex.
-  if (clickedOnVertex) return;
-
-  // Handle first click for a newly created empty trail feature
-  if (selectedFeature && selectedFeature.get('isFirstPoint')) {
-    const geometry = selectedFeature.getGeometry();
-    geometry.setCoordinates([evt.coordinate]);
-    selectedFeature.unset('isFirstPoint');
-    if (!trailFeatures.includes(selectedFeature)) trailFeatures.push(selectedFeature);
-    updateVertices();
-    setGlobalSelected(vertexMap.length - 1);
-    return;
-  }
-
   // Check if clicking near the first vertex to close polygon
   if (isNearFirstVertex(evt.coordinate)) {
     const geometry = selectedFeature.getGeometry();
     const coords = geometry.getCoordinates();
     // Close the polygon by converting LineString to Polygon
+    if (coords.length > 0) {
+      coords.push([...coords[0]]); // explicitly close the ring
+    }
     const polygonCoords = [coords];
     const polygon = new Polygon(polygonCoords);
     selectedFeature.setGeometry(polygon);
@@ -410,11 +365,26 @@ map.on('click', function (evt) {
       }),
     }));
     
-    // Exit trail creation mode
-    isCreatingTrail = false;
-    document.body.style.cursor = 'auto';
     updateVertices();
+    // After closing into a polygon, select the newly added closing vertex
+    setGlobalSelected(vertexMap.findIndex(e => e.feature === selectedFeature && e.index === polygonCoords[0].length - 1));
     updateTextarea();
+    return;
+  }
+
+  // If the user clicked directly on a rendered vertex marker, do nothing here.
+  // We don't want clicks on vertex graphics to move existing vertices —
+  // extension should happen by clicking the map empty area after highlighting a vertex.
+  if (clickedOnVertex) return;
+
+  // Handle first click for a newly created empty trail feature
+  if (selectedFeature && selectedFeature.get('isFirstPoint')) {
+    const geometry = selectedFeature.getGeometry();
+    geometry.setCoordinates([evt.coordinate]);
+    selectedFeature.unset('isFirstPoint');
+    if (!trailFeatures.includes(selectedFeature)) trailFeatures.push(selectedFeature);
+    updateVertices();
+    setGlobalSelected(vertexMap.length - 1);
     return;
   }
 
@@ -738,11 +708,19 @@ document.addEventListener('keydown', function(evt) {
     const geomType = geom.getType();
     
     if (geomType === 'Point') {
-      // For points, delete the entire feature
       vectorSource.removeFeature(feat);
       const ti = trailFeatures.indexOf(feat);
       if (ti !== -1) trailFeatures.splice(ti, 1);
       if (selectedFeature === feat) selectedFeature = null;
+
+      if (trailFeatures.length === 0) {
+        isCreatingTrail = false;
+        document.body.style.cursor = 'auto';
+        if (vertexLayer) {
+          map.removeLayer(vertexLayer);
+          vertexLayer = null;
+        }
+      }
 
       // Refresh UI and selections
       updateVertices();
@@ -766,15 +744,42 @@ document.addEventListener('keydown', function(evt) {
     const delIdx = entry.index;
 
     // Remove the selected vertex
-    coords.splice(delIdx, 1);
+    if (isPolygon) {
+      if (delIdx === 0 || delIdx === coords.length - 1) {
+        // If deleting the start/end vertex, remove the first and ensure closed
+        coords.splice(0, 1);
+        if (coords.length > 0) {
+          coords[coords.length - 1] = [...coords[0]];
+        }
+      } else {
+        coords.splice(delIdx, 1);
+      }
+    } else {
+      coords.splice(delIdx, 1);
+    }
 
-    // If the feature is left with less than 3 coordinates for polygon or 0 for linestring, remove the entire feature.
-    if ((isPolygon && coords.length < 3) || (!isPolygon && coords.length === 0)) {
-      // Remove from source and editable lists
+    // Convert polygon to linestring if not enough points
+    let convertedToLineString = false;
+    if (isPolygon && coords.length < 4) {
+      coords.pop(); // Remove the closing duplicate point
+      const newLineString = new LineString(coords);
+      feat.setGeometry(newLineString);
+      isPolygon = false;
+      convertedToLineString = true;
+    } else if (coords.length === 0) {
       vectorSource.removeFeature(feat);
       const ti = trailFeatures.indexOf(feat);
       if (ti !== -1) trailFeatures.splice(ti, 1);
       if (selectedFeature === feat) selectedFeature = null;
+
+      if (trailFeatures.length === 0) {
+        isCreatingTrail = false;
+        document.body.style.cursor = 'auto';
+        if (vertexLayer) {
+          map.removeLayer(vertexLayer);
+          vertexLayer = null;
+        }
+      }
 
       // Refresh UI and selections
       updateVertices();
@@ -783,11 +788,13 @@ document.addEventListener('keydown', function(evt) {
       return;
     }
 
-    // Otherwise update the geometry with the removed vertex
-    if (isPolygon) {
-      geom.setCoordinates([coords]);
-    } else {
-      geom.setCoordinates(coords);
+    // Otherwise update the geometry with the removed vertex (if not already converted)
+    if (!convertedToLineString) {
+      if (isPolygon) {
+        geom.setCoordinates([coords]);
+      } else {
+        geom.setCoordinates(coords);
+      }
     }
 
     // Adjust branchStart metadata if present
@@ -896,7 +903,15 @@ contextMenu.addEventListener('click', function (evt) {
 
         // Ensure vertex layer and render vertices via updateVertices
         updateVertices();
-        if (vertexMap.length > 0) setGlobalSelected(0); else globalSelectedIndex = -1;
+        if (vertexMap.length > 0) {
+          if (geomType === 'Polygon') {
+            setGlobalSelected(Math.max(0, vertexMap.length - 2));
+          } else {
+            setGlobalSelected(vertexMap.length - 1);
+          }
+        } else {
+          globalSelectedIndex = -1;
+        }
       }
       break;
     }
@@ -948,11 +963,29 @@ contextMenu.addEventListener('click', function (evt) {
     }
 
     case 'Deselect':
-      if (isCreatingTrail && originalCoords) {
-        selectedFeature.getGeometry().setCoordinates(originalCoords);
-        originalCoords = null;
+      if (isCreatingTrail) {
+        if (originalCoords) {
+          const geomType = selectedFeature.getGeometry().getType();
+          if (geomType === 'Polygon') {
+            selectedFeature.getGeometry().setCoordinates([originalCoords]);
+          } else if (geomType === 'LineString' && originalCoords.length === 1) {
+            selectedFeature.setGeometry(new Point(originalCoords[0]));
+          } else {
+            selectedFeature.getGeometry().setCoordinates(originalCoords);
+          }
+          originalCoords = null;
+        } else {
+          // If it's a new unsaved trail, remove it
+          vectorSource.removeFeature(selectedFeature);
+          const ti = trailFeatures.indexOf(selectedFeature);
+          if (ti !== -1) trailFeatures.splice(ti, 1);
+        }
+        updateTextarea(); // Revert the exported GeoJSON state to match the undo
       }
-      selectedFeature.setStyle(defaultStyle);
+
+      if (selectedFeature) {
+        selectedFeature.setStyle(defaultStyle);
+      }
       selectedFeature = null;
       if (vertexLayer) {
         map.removeLayer(vertexLayer);
