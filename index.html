@@ -94,10 +94,14 @@
 <body>
   <!-- Sidebar -->
   <div id="sidebar">
-    <h2>Input Data</h2>
-    <label for="geojson">GeoJSON</label>
-    <textarea id="geojson" rows="1" cols="1" placeholder="Input data goes here"
-      style="width: 242px; height: 664px;"></textarea>
+    <h2 style="padding: 0 8px;">Input Data</h2>
+    <div style="display: flex; gap: 6px; padding: 0 8px 8px;">
+      <button id="clear-map" style="flex: 1; padding: 5px; cursor: pointer;">Clear</button>
+      <button id="format-json" style="flex: 1; padding: 5px; cursor: pointer;">Format</button>
+    </div>
+    <label for="geojson" style="padding: 0 8px; display: block; margin-bottom: 4px;">GeoJSON</label>
+    <textarea id="geojson" rows="1" cols="1" placeholder="Paste GeoJSON here"
+      style="width: 234px; height: 620px; margin: 0 8px; font-family: monospace; font-size: 11px;"></textarea>
   </div>
 
   <!-- Sidebar toggle button -->
